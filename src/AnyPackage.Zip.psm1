@@ -2,12 +2,14 @@
 using namespace AnyPackage.Provider
 using namespace System.IO
 using namespace System.IO.Compression
+using namespace System.Management.Automation
 
 [PackageProvider('ZIP', FileExtensions = '.zip', PackageByName = $false)]
 class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage, IUninstallPackage, IUpdatePackage {
     [object] GetDynamicParameters([string] $commandName) {
         return $(switch ($commandName) {
                 'Get-Package' { return [GetPackageDynamicParameters]::new() }
+                'Install-Package' { return [InstallPackageDynamicParameters]::new() }
                 default { return $null }
             })
     }
@@ -15,10 +17,10 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
     [PackageProviderInfo] Initialize([PackageProviderInfo] $providerInfo) {
         return [ZipProviderInfo]::new($providerInfo)
     }
-    
+
     [void] FindPackage([PackageRequest] $request) {
         $info = Get-PackageInfo -Path $request.Path
-        
+
         $sourceParams = @{
             Name     = $request.Path
             Location = $request.Path
@@ -65,9 +67,9 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
                 Location = $file.Directory
                 Provider = $request.ProviderInfo
             }
-    
+
             $source = New-SourceInfo @sourceParams
-    
+
             $packageParams = @{
                 Name        = $info.Name
                 Version     = $info.Version
@@ -79,7 +81,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
 
             $package = New-PackageInfo @packageParams
 
-            if ($request.IsMatch($package.Name, $package.Version)) { 
+            if ($request.IsMatch($package.Name, $package.Version)) {
                 $request.WritePackage($package)
             }
         }
@@ -92,13 +94,13 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         } else {
             $path = $request.Path
             $info = Get-PackageInfo -Path $path
-            
+
             $sourceParams = @{
                 Name     = $request.Path
                 Location = $request.Path
                 Provider = $request.ProviderInfo
             }
-    
+
             $source = New-SourceInfo @sourceParams
 
             $packageParams = @{
@@ -109,7 +111,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
                 Metadata    = ($info.Metadata | ConvertTo-Hashtable)
                 Provider    = $request.ProviderInfo
             }
-    
+
             $package = New-PackageInfo @packageParams
         }
 
@@ -117,6 +119,34 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         $request.WriteVerbose("Install path: $installPath")
 
         Expand-Archive -Path $path -DestinationPath $installPath -ErrorAction Stop
+        $installScript = Join-Path -Path $installPath -ChildPath 'tools/install.ps1'
+        $request.WriteVerbose("Install script: $installScript")
+
+        if (Test-Path -Path $installScript) {
+            $request.WriteVerbose('Calling install script')
+            if ($request.DynamicParameters.PackageParameters) {
+                $installScriptParams = $request.DynamicParameters.PackageParameters
+            } else {
+                $installScriptParams = @{ }
+            }
+
+            $installScriptParams['Verbose'] = $true
+            $installScriptParams['Debug'] = $true
+
+            & $installScript @installScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | ForEach-Object {
+                $item = $_
+                switch ($_.GetType()) {
+                    { $_ -eq [VerboseRecord]} { $request.WriteVerbose($item.Message) }
+                    { $_ -eq [DebugRecord]} { $request.WriteDebug($item.Message) }
+                    { $_ -eq [WarningRecord]} { $request.WriteWarning($item.Message) }
+                    { $_ -eq [ErrorRecord]} { $request.WriteError($item) }
+                    { $_ -eq [InformationalRecord]} { $request.WriteInformation($item) }
+                }
+            }
+        } else {
+            $request.WriteVerbose('Install script not found.')
+        }
+
         $request.WritePackage($package)
     }
 
@@ -150,12 +180,12 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
                 Path     = $request.Path
                 Provider = $request.ProviderInfo.FullName
             }
-            
+
             $findPackage = Find-Package @findPackageParams
         } else {
             $findPackage = $request.Package
         }
-        
+
         if ($null -eq $findPackage) {
             return
         }
@@ -188,9 +218,15 @@ class GetPackageDynamicParameters {
     $Path
 }
 
+class InstallPackageDynamicParameters {
+    [Parameter()]
+    [hashtable]
+    $PackageParameters
+}
+
 class ZipProviderInfo : PackageProviderInfo {
     [string] $InstallPath
-    
+
     ZipProviderInfo([PackageProviderInfo] $providerInfo) : base($providerInfo) {
         if ($global:IsLinux -or $global:IsMacOS) {
             $this.InstallPath = Join-Path -Path $global:Home -ChildPath '.local/share/anypackage/zip'
@@ -226,7 +262,7 @@ function ConvertTo-Hashtable {
         [PSObject]
         $InputObject
     )
-    
+
     process {
         $props = $InputObject | Get-Member -MemberType Properties | Select-Object -ExpandProperty Name
         $ht = @{ }
