@@ -44,6 +44,37 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         foreach ($file in $files) {
             $package = Get-PackageInfo -Path $file
 
+            $installPath = Split-Path -Path $package.Source.Location -Parent
+            $request.WriteVerbose("Install path: $installPath")
+
+            if (Test-Path -Path $installPath) {
+                $testScript = Join-Path -Path $installPath -ChildPath 'tools/test.ps1'
+                $request.WriteVerbose("Test script: $testScript")
+
+                if (Test-Path -Path $testScript) {
+                    $request.WriteVerbose('Calling test script')
+                    if ($request.DynamicParameters.PackageParameters) {
+                        $testScriptParams = $request.DynamicParameters.PackageParameters
+                    } else {
+                        $testScriptParams = @{ }
+                    }
+
+                    $testScriptParams['Verbose'] = $true
+                    $testScriptParams['Debug'] = $true
+
+                    $installed = & $testScript @testScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
+
+                    $request.WriteVerbose("Test script returned: $installed")
+
+                    if ($installed -isnot [bool] -or $installed -eq $false) {
+                        $request.WriteVerbose("Removing cached package.")
+                        Remove-Item -Path $installPath -Recurse -ErrorAction Stop
+                    }
+                } else {
+                    $request.WriteVerbose('Test script not found.')
+                }
+            }
+
             if ($request.IsMatch($package.Name, $package.Version)) {
                 $request.WritePackage($package)
             }
@@ -174,6 +205,10 @@ class GetPackageDynamicParameters {
     [Parameter()]
     [string]
     $Path
+
+    [Parameter()]
+    [hashtable]
+    $PackageParameters
 }
 
 class InstallPackageDynamicParameters {
@@ -279,7 +314,8 @@ function Write-PackageTrace {
             { $_ -eq [DebugRecord] } { $Request.WriteDebug($InputObject.Message) }
             { $_ -eq [WarningRecord] } { $Request.WriteWarning($InputObject.Message) }
             { $_ -eq [ErrorRecord] } { $Request.WriteError($InputObject) }
-            { $_ -eq [InformationalRecord] } { $Request.WriteInformation($InputObject) }
+            { $_ -eq [InformationRecord] } { $Request.WriteInformation($InputObject) }
+            default { $InputObject }
         }
     }
 }
