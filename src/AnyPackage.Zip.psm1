@@ -10,6 +10,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         return $(switch ($commandName) {
                 'Get-Package' { return [GetPackageDynamicParameters]::new() }
                 'Install-Package' { return [InstallPackageDynamicParameters]::new() }
+                'Uninstall-Package' { return [UninstallPackageDynamicParameters]::new() }
                 default { return $null }
             })
     }
@@ -140,8 +141,29 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         }
 
         foreach ($package in $packages) {
-            if (Test-Path -Path $package.Source.Location) {
-                Remove-Item -Path $package.Source.Location -Recurse -ErrorAction Stop
+            $installPath = Split-Path -Path $package.Source.Location -Parent
+
+            if (Test-Path -Path $installPath) {
+                $uninstallScript = Join-Path -Path $installPath -ChildPath 'tools/uninstall.ps1'
+                $request.WriteVerbose("Uninstall script: $uninstallScript")
+
+                if (Test-Path -Path $uninstallScript) {
+                    $request.WriteVerbose('Calling uninstall script')
+                    if ($request.DynamicParameters.PackageParameters) {
+                        $uninstallScriptParams = $request.DynamicParameters.PackageParameters
+                    } else {
+                        $uninstallScriptParams = @{ }
+                    }
+
+                    $uninstallScriptParams['Verbose'] = $true
+                    $uninstallScriptParams['Debug'] = $true
+
+                    & $uninstallScript @uninstallScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
+                } else {
+                    $request.WriteVerbose('Uninstall script not found.')
+                }
+
+                Remove-Item -Path $installPath -Recurse -ErrorAction Stop
                 $request.WritePackage($package)
             }
         }
@@ -192,6 +214,12 @@ class GetPackageDynamicParameters {
 }
 
 class InstallPackageDynamicParameters {
+    [Parameter()]
+    [hashtable]
+    $PackageParameters
+}
+
+class UninstallPackageDynamicParameters {
     [Parameter()]
     [hashtable]
     $PackageParameters
