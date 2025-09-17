@@ -5,7 +5,7 @@ using namespace System.IO.Compression
 using namespace System.Management.Automation
 
 [PackageProvider('ZIP', FileExtensions = '.zip', PackageByName = $false)]
-class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage, IUninstallPackage, IUpdatePackage {
+class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage, IUninstallPackage {
     [object] GetDynamicParameters([string] $commandName) {
         return $(switch ($commandName) {
                 'Get-Package' { return [GetPackageDynamicParameters]::new() }
@@ -167,43 +167,6 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
                 $request.WritePackage($package)
             }
         }
-    }
-
-    [void] UpdatePackage([PackageRequest] $request) {
-        if ($request.ParameterSetName -eq 'Path') {
-            $findPackageParams = @{
-                Path     = $request.Path
-                Provider = $request.ProviderInfo.FullName
-            }
-
-            $findPackage = Find-Package @findPackageParams
-        } else {
-            $findPackage = $request.Package
-        }
-
-        if ($null -eq $findPackage) {
-            return
-        }
-
-        $getPackageParams = @{
-            Name     = $findPackage.Name
-            Provider = $request.ProviderInfo.FullName
-        }
-
-        $latest = Get-Package @getPackageParams |
-            Sort-Object Version -Descending |
-            Select-Object -First 1
-
-        if ($null -eq $latest) {
-            return
-        }
-
-        if ($findPackage.Version -lt $latest.Version) {
-            throw "Package '$($findPackage.Name)' version '$($findPackage.Version)' is less than installed version '$($latest.Version)'."
-        }
-
-        $package = $findPackage | Install-Package -PassThru -ErrorAction Stop
-        $request.WritePackage($package)
     }
 }
 
