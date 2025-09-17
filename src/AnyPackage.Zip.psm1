@@ -19,26 +19,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
     }
 
     [void] FindPackage([PackageRequest] $request) {
-        $info = Get-PackageInfo -Path $request.Path
-
-        $sourceParams = @{
-            Name     = $request.Path
-            Location = $request.Path
-            Provider = $request.ProviderInfo
-        }
-
-        $source = New-SourceInfo @sourceParams
-
-        $packageParams = @{
-            Name        = $info.Name
-            Version     = $info.Version
-            Source      = $source
-            Description = $info.Description
-            Metadata    = ($info.Metadata | ConvertTo-Hashtable)
-            Provider    = $request.ProviderInfo
-        }
-
-        $package = New-PackageInfo @packageParams
+        $package = Get-PackageInfo -Path $request.Path
         $request.WritePackage($package)
     }
 
@@ -54,32 +35,13 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         }
 
         $getChildItemParams = @{
-            Path = (Join-Path $installPath '*/*/.package.json')
+            Path = (Join-Path $installPath '*/.package.json')
         }
 
         $files = Get-ChildItem @getChildItemParams
 
         foreach ($file in $files) {
-            $info = $file | Get-Content | ConvertFrom-Json
-
-            $sourceParams = @{
-                Name     = $file.Directory
-                Location = $file.Directory
-                Provider = $request.ProviderInfo
-            }
-
-            $source = New-SourceInfo @sourceParams
-
-            $packageParams = @{
-                Name        = $info.Name
-                Version     = $info.Version
-                Source      = $source
-                Description = $info.Description
-                Metadata    = ($info.Metadata | ConvertTo-Hashtable)
-                Provider    = $request.ProviderInfo
-            }
-
-            $package = New-PackageInfo @packageParams
+            $package = Get-PackageInfo -Path $file
 
             if ($request.IsMatch($package.Name, $package.Version)) {
                 $request.WritePackage($package)
@@ -93,33 +55,30 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
             $package = $request.Package
         } else {
             $path = $request.Path
-            $info = Get-PackageInfo -Path $path
-
-            $sourceParams = @{
-                Name     = $request.Path
-                Location = $request.Path
-                Provider = $request.ProviderInfo
-            }
-
-            $source = New-SourceInfo @sourceParams
-
-            $packageParams = @{
-                Name        = $info.Name
-                Version     = $info.Version
-                Source      = $source
-                Description = $info.Description
-                Metadata    = ($info.Metadata | ConvertTo-Hashtable)
-                Provider    = $request.ProviderInfo
-            }
-
-            $package = New-PackageInfo @packageParams
+            $package = Get-PackageInfo -Path $path
         }
 
-        $installPath = Join-Path -Path $request.ProviderInfo.InstallPath -ChildPath "$($package.Name)/$($package.Version)"
-        $request.WriteVerbose("Install path: $installPath")
+        $getPackageParams = @{
+            Name        = $package.Name
+            Provider    = $request.ProviderInfo.FullName
+            ErrorAction = 'SilentlyContinue'
+        }
 
-        Expand-Archive -Path $path -DestinationPath $installPath -ErrorAction Stop
-        $installScript = Join-Path -Path $installPath -ChildPath 'tools/install.ps1'
+        $installedPackage = Get-Package @getPackageParams
+
+        if ($installedPackage.Version -eq $package.Version) {
+            $request.WriteVerbose('Package already installed')
+            $request.WritePackage($package)
+            return
+        }
+
+        $tempPath = Join-Path -Path ([Path]::GetTempPath()) -ChildPath ([Path]::GetRandomFileName())
+        $request.WriteVerbose("Temp path: $tempPath")
+
+        $request.WriteVerbose('Extracting package to temp path')
+        Expand-Archive -Path $path -DestinationPath $tempPath -ErrorAction Stop
+
+        $installScript = Join-Path -Path $tempPath -ChildPath 'tools/install.ps1'
         $request.WriteVerbose("Install script: $installScript")
 
         if (Test-Path -Path $installScript) {
@@ -133,19 +92,33 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
             $installScriptParams['Verbose'] = $true
             $installScriptParams['Debug'] = $true
 
-            & $installScript @installScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | ForEach-Object {
-                $item = $_
-                switch ($_.GetType()) {
-                    { $_ -eq [VerboseRecord]} { $request.WriteVerbose($item.Message) }
-                    { $_ -eq [DebugRecord]} { $request.WriteDebug($item.Message) }
-                    { $_ -eq [WarningRecord]} { $request.WriteWarning($item.Message) }
-                    { $_ -eq [ErrorRecord]} { $request.WriteError($item) }
-                    { $_ -eq [InformationalRecord]} { $request.WriteInformation($item) }
-                }
-            }
+            & $installScript @installScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
         } else {
             $request.WriteVerbose('Install script not found.')
         }
+
+        $installPath = Join-Path -Path $request.ProviderInfo.InstallPath -ChildPath $package.Name
+        $request.WriteVerbose("Package cache path: $installPath")
+
+        if (Test-Path -Path $installPath) {
+            $request.WriteVerbose("Removing existing package cache for: $($package.Name)")
+            Remove-Item -Path "$installPath/*" -Recurse -ErrorAction Stop
+        } else {
+            New-Item -Path $installPath -ItemType Directory -ErrorAction Stop
+        }
+
+        $request.WriteVerbose('Moving files to package cache')
+        $packagePath = Join-Path -Path $tempPath -ChildPath '.package.json'
+        Move-Item -Path $packagePath -Destination $installPath -ErrorAction Stop
+
+        $toolsPath = Join-Path -Path $tempPath -ChildPath 'tools'
+
+        if (Test-Path -Path $toolsPath) {
+            Move-Item -Path $toolsPath -Destination $installPath -ErrorAction Stop
+        }
+
+        $request.WriteVerbose('Removing temp directory')
+        Remove-Item -Path $tempPath -Recurse
 
         $request.WritePackage($package)
     }
@@ -242,18 +215,41 @@ function Get-PackageInfo {
         $Path
     )
 
-    try {
-        $fs = [FileStream]::new($Path, [FileMode]::Open)
-        $zip = [ZipArchive]::new($fs)
-        $file = $zip.Entries | Where-Object Name -EQ '.package.json'
-        if (-not $file) { throw '.package.json not found in zip file.' }
-        $sr = [StreamReader]::new($file.Open())
-        $sr.ReadToEnd() | ConvertFrom-Json
-    } finally {
-        if ($fs) { $fs.Dispose() }
-        if ($zip) { $zip.Dispose() }
-        if ($sr) { $sr.Dispose() }
+    if ([Path]::GetExtension($Path) -eq '.zip') {
+        try {
+            $fs = [FileStream]::new($Path, [FileMode]::Open)
+            $zip = [ZipArchive]::new($fs)
+            $file = $zip.Entries | Where-Object Name -EQ '.package.json'
+            if (-not $file) { throw '.package.json not found in zip file.' }
+            $sr = [StreamReader]::new($file.Open())
+            $info = $sr.ReadToEnd() | ConvertFrom-Json
+        } finally {
+            if ($fs) { $fs.Dispose() }
+            if ($zip) { $zip.Dispose() }
+            if ($sr) { $sr.Dispose() }
+        }
+    } elseif ([Path]::GetExtension($Path) -eq '.json') {
+        $info = Get-Content -Path $Path -ErrorAction Stop | ConvertFrom-Json
     }
+
+    $sourceParams = @{
+        Name     = $Path
+        Location = $Path
+        Provider = $request.ProviderInfo
+    }
+
+    $source = New-SourceInfo @sourceParams
+
+    $packageParams = @{
+        Name        = $info.Name
+        Version     = $info.Version
+        Source      = $source
+        Description = $info.Description
+        Metadata    = ($info.Metadata | ConvertTo-Hashtable)
+        Provider    = $request.ProviderInfo
+    }
+
+    New-PackageInfo @packageParams
 }
 
 function ConvertTo-Hashtable {
@@ -272,6 +268,28 @@ function ConvertTo-Hashtable {
         }
 
         $ht
+    }
+}
+
+function Write-PackageTrace {
+    param (
+        [Parameter(ValueFromPipeline)]
+        [Object]
+        $InputObject,
+
+        [Parameter()]
+        [Request]
+        $Request
+    )
+
+    process {
+        switch ($InputObject.GetType()) {
+            { $_ -eq [VerboseRecord] } { $request.WriteVerbose($InputObject.Message) }
+            { $_ -eq [DebugRecord] } { $request.WriteDebug($InputObject.Message) }
+            { $_ -eq [WarningRecord] } { $request.WriteWarning($InputObject.Message) }
+            { $_ -eq [ErrorRecord] } { $request.WriteError($InputObject) }
+            { $_ -eq [InformationalRecord] } { $request.WriteInformation($InputObject) }
+        }
     }
 }
 
