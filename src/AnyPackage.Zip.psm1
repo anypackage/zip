@@ -312,11 +312,11 @@ function Write-PackageTrace {
 
     process {
         switch ($InputObject.GetType()) {
-            { $_ -eq [VerboseRecord] } { $request.WriteVerbose($InputObject.Message) }
-            { $_ -eq [DebugRecord] } { $request.WriteDebug($InputObject.Message) }
-            { $_ -eq [WarningRecord] } { $request.WriteWarning($InputObject.Message) }
-            { $_ -eq [ErrorRecord] } { $request.WriteError($InputObject) }
-            { $_ -eq [InformationalRecord] } { $request.WriteInformation($InputObject) }
+            { $_ -eq [VerboseRecord] } { $Request.WriteVerbose($InputObject.Message) }
+            { $_ -eq [DebugRecord] } { $Request.WriteDebug($InputObject.Message) }
+            { $_ -eq [WarningRecord] } { $Request.WriteWarning($InputObject.Message) }
+            { $_ -eq [ErrorRecord] } { $Request.WriteError($InputObject) }
+            { $_ -eq [InformationalRecord] } { $Request.WriteInformation($InputObject) }
         }
     }
 }
