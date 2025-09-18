@@ -47,31 +47,13 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
             $installPath = Split-Path -Path $package.Source.Location -Parent
             $request.WriteVerbose("Install path: $installPath")
 
-            if (Test-Path -Path $installPath) {
-                $testScript = Join-Path -Path $installPath -ChildPath 'tools/test.ps1'
-                $request.WriteVerbose("Test script: $testScript")
+            $testScript = Join-Path -Path $installPath -ChildPath 'tools/test.ps1'
+            if (Test-Path -Path $testScript) {
+                $result = Invoke-PackageScript -Path $testScript -Verb 'Test' -Request $request
 
-                if (Test-Path -Path $testScript) {
-                    $request.WriteVerbose('Calling test script')
-                    if ($request.DynamicParameters.PackageParameters) {
-                        $testScriptParams = $request.DynamicParameters.PackageParameters
-                    } else {
-                        $testScriptParams = @{ }
-                    }
-
-                    $testScriptParams['Verbose'] = $true
-                    $testScriptParams['Debug'] = $true
-
-                    $installed = & $testScript @testScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
-
-                    $request.WriteVerbose("Test script returned: $installed")
-
-                    if ($installed -isnot [bool] -or $installed -eq $false) {
-                        $request.WriteVerbose("Removing cached package.")
-                        Remove-Item -Path $installPath -Recurse -ErrorAction Stop
-                    }
-                } else {
-                    $request.WriteVerbose('Test script not found.')
+                if ($result -isnot [bool] -or $result -eq $false) {
+                    $request.WriteVerbose('Removing cached package.')
+                    Remove-Item -Path $installPath -Recurse -ErrorAction Stop
                 }
             }
 
@@ -111,23 +93,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
         Expand-Archive -Path $path -DestinationPath $tempPath -ErrorAction Stop
 
         $installScript = Join-Path -Path $tempPath -ChildPath 'tools/install.ps1'
-        $request.WriteVerbose("Install script: $installScript")
-
-        if (Test-Path -Path $installScript) {
-            $request.WriteVerbose('Calling install script')
-            if ($request.DynamicParameters.PackageParameters) {
-                $installScriptParams = $request.DynamicParameters.PackageParameters
-            } else {
-                $installScriptParams = @{ }
-            }
-
-            $installScriptParams['Verbose'] = $true
-            $installScriptParams['Debug'] = $true
-
-            & $installScript @installScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
-        } else {
-            $request.WriteVerbose('Install script not found.')
-        }
+        Invoke-PackageScript -Path $installScript -Verb 'Install' -Request $request
 
         $installPath = Join-Path -Path $request.ProviderInfo.InstallPath -ChildPath $package.Name
         $request.WriteVerbose("Package cache path: $installPath")
@@ -176,23 +142,7 @@ class ZipProvider : PackageProvider, IFindPackage, IGetPackage, IInstallPackage,
 
             if (Test-Path -Path $installPath) {
                 $uninstallScript = Join-Path -Path $installPath -ChildPath 'tools/uninstall.ps1'
-                $request.WriteVerbose("Uninstall script: $uninstallScript")
-
-                if (Test-Path -Path $uninstallScript) {
-                    $request.WriteVerbose('Calling uninstall script')
-                    if ($request.DynamicParameters.PackageParameters) {
-                        $uninstallScriptParams = $request.DynamicParameters.PackageParameters
-                    } else {
-                        $uninstallScriptParams = @{ }
-                    }
-
-                    $uninstallScriptParams['Verbose'] = $true
-                    $uninstallScriptParams['Debug'] = $true
-
-                    & $uninstallScript @uninstallScriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
-                } else {
-                    $request.WriteVerbose('Uninstall script not found.')
-                }
+                Invoke-PackageScript -Path $uninstallScript -Verb 'Uninstall' -Request $request
 
                 Remove-Item -Path $installPath -Recurse -ErrorAction Stop
                 $request.WritePackage($package)
@@ -317,6 +267,41 @@ function Write-PackageTrace {
             { $_ -eq [InformationRecord] } { $Request.WriteInformation($InputObject) }
             default { $InputObject }
         }
+    }
+}
+
+function Invoke-PackageScript {
+    param (
+        [Parameter()]
+        [string]
+        $Path,
+
+        [Parameter()]
+        [string]
+        $Verb,
+
+        [Parameter()]
+        [PackageRequest]
+        $Request
+    )
+
+    $Request.WriteVerbose("$Verb script: $Path")
+
+    if (Test-Path -Path $Path) {
+        $Request.WriteVerbose("Calling script")
+
+        if ($Request.DynamicParameters.PackageParameters) {
+            $scriptParams = $Request.DynamicParameters.PackageParameters
+        } else {
+            $scriptParams = @{ }
+        }
+
+        $scriptParams['Verbose'] = $true
+        $scriptParams['Debug'] = $true
+
+        & $Path @scriptParams 2>&1 3>&1 4>&1 5>&1 6>&1 | Write-PackageTrace -Request $request
+    } else {
+        $request.WriteVerbose("$Verb script not found.")
     }
 }
 
